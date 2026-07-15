@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: Apache-2.0
+# Example AgentKnox policy demonstrating the dual-layer (semantic × system) model.
+# Applies to all five supported agents. See docs/workflow.md appendix A.
+apiVersion: security.boanlab.com/v1
+kind: AgentKnoxPolicy
+metadata:
+  name: baseline-credential-protection
+spec:
+  selector: ["*"] # claude-code | codex | crush | gemini | copilot | *
+  defaultEffect: Allow
+  rules:
+    # 1. Pure system rule (pre-enforceable in BPF-LSM): never open SSH private key.
+    - name: deny-ssh-private-key
+      when:
+        system:
+          op: open
+          path: "/root/.ssh/id_rsa"
+      effect: Block
+
+    # 2. Dual-layer: a read-only tool_use that causes an outbound connection to a
+    #    tainted (user-unseen sensitive file) destination -> kill the session.
+    - name: exfil-via-read-intent
+      when:
+        semantic:
+          intentClass: read
+          taint: sensitive
+        system:
+          op: connect
+      effect: Kill
+
+    # 3. Provenance: code the agent itself wrote may not be executed. Enforced in
+    #    the kernel at exec, on the label the write-open recorded under both the
+    #    path and the inode. An interpreter's read of such a script is gated by
+    #    the narrower agent-code label instead. Note this is when.semantic.provenance
+    #    (a property of the file), not when.semantic.taint (a correlation label).
+    - name: no-agent-written-code
+      when:
+        semantic:
+          provenance: agent-written
+        system:
+          op: exec
+      effect: Block
+
+    # 4. Semantic: block MCP tool-poisoning method probes (illustrative).
+    - name: suspicious-mcp-method
+      when:
+        semantic:
+          mcpMethod: "tools/call"
+          taint: user-unseen
+      effect: Alert
+
+    # 5. FQDN egress block (pre-enforceable in BPF-LSM): connects to *.evil.example
+    #    are denied. DNS answers for the name are resolved to IPs and installed
+    #    into the kernel egress deny map (TTL-evicted).
+    - name: deny-known-bad-domain
+      when:
+        system:
+          op: connect
+          fqdn: "evil.example"
+      effect: Block
+
+    # 6. Coverage-adaptive: if semantic observability is degraded, tighten posture
+    #    by alerting on any egress from such a session.
+    - name: tighten-when-blind
+      when:
+        system:
+          op: connect
+        condition:
+          coverage: degraded
+      effect: Alert
+
+    # 7. Identity-adaptive: the agent binary's build-id is not one the offset
+    #    database vouches for, so do not let this session reach the network.
+    - name: untrusted-agent-build
+      when:
+        system:
+          op: connect
+        condition:
+          tampered: true
+      effect: Block

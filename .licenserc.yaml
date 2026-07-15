@@ -1,0 +1,24 @@
+header:
+  license:
+    spdx-id: Apache-2.0
+    copyright-owner: BoanLab @ Dankook University
+    content: |
+      SPDX-License-Identifier: Apache-2.0
+
+  paths:
+    - "**/*.go"
+    - "**/Makefile"
+    - "**/Dockerfile"
+
+  paths-ignore:
+    - "protobuf/*.pb.go"
+    - "internal/sensor/*_bpfel*"
+    - "bpf/*.o"
+    - "bpf/vmlinux.h"
+    # eBPF C sources under bpf/ are GPL-2.0 (SPDX headers maintained manually);
+    # they are excluded from this Apache-2.0 header check.
+    - "bpf/**"
+
+dependency:
+  files:
+    - go.mod

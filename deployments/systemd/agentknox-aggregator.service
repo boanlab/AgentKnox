@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# Central AgentKnox aggregator (embedded bbolt storage). For a Postgres-backed
+# deployment, use deployments/aggregator/docker-compose.yaml instead.
+[Unit]
+Description=AgentKnox aggregator - central event collection for AI coding agent monitoring
+Documentation=https://github.com/boanlab/agentknox
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agentknox-aggregator --listen=:36930 --storage=bolt --bolt-path=/var/lib/agentknox-aggregator/events.db --retention=720h --log-level=info
+Restart=on-failure
+RestartSec=3
+DynamicUser=yes
+StateDirectory=agentknox-aggregator
+# The aggregator is an unprivileged network service — no special capabilities.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

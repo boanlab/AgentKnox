@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Example AgentKnox daemon config. Place at ./agentknox.yaml or /etc/agentknox/agentknox.yaml.
+# Every key can also be overridden by AGENTKNOX_<KEY> env vars.
+mode: workstation                 # workstation | docker | host
+policyDir: /etc/agentknox/policies
+grpcAddr: "127.0.0.1:36920"       # AgentKnoxExport listen address. No TLS, no auth,
+                                  # and the stream carries captured prompt bodies,
+                                  # so widen this only behind an authenticated tunnel.
+manageCgroup: false               # true = move agents into dedicated cgroup (invasive); false = use existing cgroup id
+walDir: /var/lib/agentknox/wal
+archiveDir: /var/lib/agentknox/scripts   # scripts/code the agent writes & runs are copied here
+semanticEnabled: true
+capturePrompts: true              # true = capture raw prompt/response bodies (stored locally in WAL)
+offsetDBPath: /etc/agentknox/offsetdb
+agentSignatures: ["claude", "codex", "crush", "gemini", "copilot"]
+cgroupParent: agentknox.slice
+enforcerBackend: auto             # auto | bpf-lsm | userspace
+dryRun: false                     # true = observe, never block/kill
+logLevel: info
+# aggregatorAddr: aggregator-host:36930   # forward events to a central aggregator over gRPC
+#                                         # (hot-reloaded: edit this line, no daemon restart)

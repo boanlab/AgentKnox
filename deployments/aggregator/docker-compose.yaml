@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 BoanLab @ Dankook University
+#
+# Central AgentKnox aggregator + PostgreSQL. Deploy this on ONE central host; point
+# each AgentKnox daemon at it by setting `aggregatorAddr: <this-host>:36930`
+# in its agentknox.yaml (hot-reloaded — no daemon restart needed).
+#
+# The aggregator serves the AgentKnoxAggregator gRPC service on :36930:
+#   Ingest   <- daemons forward event batches here
+#   Query    -> query collected events (source/kind/since/limit)
+#   Sources  -> per-source counts
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: agentknox-db
+    environment:
+      POSTGRES_USER: agentknox
+      POSTGRES_PASSWORD: agentknox
+      POSTGRES_DB: agentknox
+    volumes:
+      - agentknox-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agentknox"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  aggregator:
+    image: boanlab/agentknox:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: agentknox-aggregator
+    entrypoint: ["/usr/local/bin/agentknox-aggregator"]
+    command:
+      - "--listen=:36930"
+      - "--storage=postgres"
+      - "--postgres-dsn=postgres://agentknox:agentknox@postgres:5432/agentknox?sslmode=disable"
+      - "--retention=720h"
+      - "--log-level=info"
+    ports:
+      - "36930:36930"   # ingest + query gRPC API
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  agentknox-pgdata:

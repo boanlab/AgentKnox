@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -e
+
+if [ -d /run/systemd/system ]; then
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+
+# On purge, remove state and configuration (dpkg handles the conffile itself).
+if [ "$1" = "purge" ]; then
+    rm -rf /var/lib/agentknox /etc/agentknox
+fi
+
+exit 0

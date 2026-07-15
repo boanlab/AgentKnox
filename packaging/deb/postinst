@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: Apache-2.0
+set -e
+
+if [ "$1" = "configure" ]; then
+    mkdir -p /var/lib/agentknox /etc/agentknox/policies
+    # Only touch systemd when it is actually running (not in a build chroot).
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable agentknox.service >/dev/null 2>&1 || true
+        systemctl restart agentknox.service >/dev/null 2>&1 || true
+    fi
+    echo "AgentKnox installed. It monitors AI coding agents on this host."
+    echo "  status:  systemctl status agentknox"
+    echo "  logs:    journalctl -u agentknox -f"
+    echo "  policies: add *.yaml under /etc/agentknox/policies (hot-reloaded)."
+    echo "  enforcement needs 'bpf' in /sys/kernel/security/lsm (else userspace fallback)."
+fi
+
+exit 0

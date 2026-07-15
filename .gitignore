@@ -1,0 +1,26 @@
+# Build output
+/bin/
+/dist/
+
+# Local scratch
+/tmp/
+*.log
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# BPF build intermediates (the committed .o is kept; temp files are not)
+*.bpf.o.tmp
+bpf/*.tmp
+
+# Note: bpf/vmlinux.h and internal/sensor/agentknox_bpfel.o are COMMITTED on
+# purpose (CO-RE object embedded via go:embed, so builds work without clang).

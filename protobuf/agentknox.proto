@@ -1,0 +1,82 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 BoanLab @ Dankook University
+//
+// AgentKnox gRPC transport. The daemon streams and replays events over the
+// AgentKnoxExport service; daemons forward to a central collector over the
+// AgentKnoxAggregator service. Event payloads travel as JSON-encoded
+// pkg/types.* values inside an Envelope, so the wire contract stays faithful to
+// the canonical Go types without mirroring every nested field here.
+syntax = "proto3";
+
+package agentknox.v1;
+
+option go_package = "github.com/boanlab/agentknox/protobuf/agentknoxpb";
+
+// Envelope wraps one event. data is the JSON encoding of the pkg/types value
+// named by kind.
+message Envelope {
+  string kind = 1;            // syscall|semantic|action|alert|edge
+  int64 time_unix_nano = 2;
+  bytes data = 3;             // JSON of *types.SyscallEvent / SemanticEvent / ...
+}
+
+// --- Export (daemon -> akctl / consumers) ---------------------------------
+
+message StreamRequest {
+  repeated string kinds = 1;  // empty = all kinds
+}
+
+message RecentRequest {
+  string kind = 1;            // empty = alert
+  uint32 limit = 2;           // 0 = server default
+}
+message RecentResponse { repeated Envelope events = 1; }
+
+message SessionsRequest {}
+message SessionsResponse { repeated bytes sessions = 1; } // JSON of *types.AgentSession
+
+message PoliciesRequest {}
+message PoliciesResponse { bytes summaries = 1; }          // JSON array of policy summaries
+
+service AgentKnoxExport {
+  rpc Stream(StreamRequest) returns (stream Envelope);
+  rpc Recent(RecentRequest) returns (RecentResponse);
+  rpc ListSessions(SessionsRequest) returns (SessionsResponse);
+  rpc ListPolicies(PoliciesRequest) returns (PoliciesResponse);
+}
+
+// --- Aggregation (daemon -> central collector) ----------------------------
+
+message IngestRequest {
+  string source = 1;          // node name of the sending daemon
+  repeated Envelope events = 2;
+}
+message IngestResponse { uint32 accepted = 1; }
+
+message QueryRequest {
+  string source = 1;
+  string kind = 2;
+  int64 since_unix_nano = 3;
+  uint32 limit = 4;
+}
+message Record {
+  string source = 1;
+  string kind = 2;
+  int64 time_unix_nano = 3;
+  bytes data = 4;
+}
+message QueryResponse { repeated Record records = 1; }
+
+message SourcesRequest {}
+message SourceStat {
+  string source = 1;
+  int64 count = 2;
+  int64 last_seen_unix_nano = 3;
+}
+message SourcesResponse { repeated SourceStat sources = 1; }
+
+service AgentKnoxAggregator {
+  rpc Ingest(IngestRequest) returns (IngestResponse);
+  rpc Query(QueryRequest) returns (QueryResponse);
+  rpc Sources(SourcesRequest) returns (SourcesResponse);
+}

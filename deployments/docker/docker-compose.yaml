@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 BoanLab @ Dankook University
+#
+# Run AgentKnox as a host-level container (single node). Requires a kernel with
+# BTF and `bpf` in the active LSM list for enforcement.
+services:
+  agentknox:
+    image: boanlab/agentknox:latest
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: agentknox
+    command: ["--log-level=info"]
+    pid: host
+    network_mode: host
+    cap_add: [BPF, PERFMON, SYS_ADMIN, NET_ADMIN, MAC_ADMIN, SYS_PTRACE, SYS_RESOURCE]
+    volumes:
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+      - /sys/kernel/debug:/sys/kernel/debug
+      - /sys/kernel/security:/sys/kernel/security
+      - /sys/fs/bpf:/sys/fs/bpf:rshared
+      - /sys/fs/cgroup:/sys/fs/cgroup
+      - ./policies:/etc/agentknox/policies:ro
+      - agentknox-state:/var/lib/agentknox
+    restart: on-failure
+
+volumes:
+  agentknox-state:

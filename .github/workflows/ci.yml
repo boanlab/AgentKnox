@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The Go-side quality gates, each mapped to the Makefile target that defines it
+# so CI and a local run enforce exactly the same rules.
+#
+# `make bpf` is deliberately NOT run here: it needs clang with a working
+# `-target bpf` plus `llvm-strip`, a toolchain not verified on the GitHub-hosted
+# runner image, and a failure there would be unrelated to the change under
+# review. The CO-RE object is committed (`internal/sensor/agentknox_bpfel.o`,
+# embedded with go:embed), so build, vet, and test all run without it.
+# Regenerating the object and loading it on a kernel stay local steps, as do the
+# root-gated tests under internal/sensor, which skip themselves when not root.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go-fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Check go-fmt
+        run: make gofmt
+
+  go-vet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build
+        run: go build ./...
+      - name: Run go vet
+        run: make vet
+
+  go-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # .golangci.yml uses schema `version: "2"`, which needs golangci-lint v2;
+      # action v7 is the first major that runs it. The action supplies its own
+      # binary, so this is the one gate that does not go through the Makefile.
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: latest
+
+  go-sec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Installed rather than run through an action so the scan uses the single
+      # exclusion set the Makefile documents, not a second copy of it.
+      - name: Install gosec
+        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      - name: Run Gosec Security Scanner
+        run: make gosec
+
+  go-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Run unit tests
+        run: make test
+
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build AgentKnox image
+        run: make build-image

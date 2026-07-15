@@ -1,0 +1,20 @@
+Package: agentknox
+Version: @VERSION@
+Section: admin
+Priority: optional
+Architecture: amd64
+Maintainer: BoanLab @ Dankook University <namjh@dankook.ac.kr>
+Homepage: https://github.com/boanlab/agentknox
+Depends: libc6
+Description: Transparent runtime security monitor and enforcer for AI coding agents
+ AgentKnox monitors and enforces policy on AI coding agents (Claude Code,
+ OpenAI Codex CLI, Crush, Gemini CLI, GitHub Copilot CLI) at the host kernel
+ boundary using eBPF and BPF-LSM, without modifying the agents. It fuses the
+ semantic layer (prompts, tool calls) with the system layer (files, processes,
+ network) and enforces dual-layer policy in the kernel.
+ .
+ Runtime requirements: Linux x86-64, kernel 5.15+ with BTF, and 'bpf' in the
+ active LSM list for in-kernel enforcement (otherwise it falls back to a
+ userspace post-hoc enforcement backend). Installs and starts a systemd
+ service; ships in observe-only mode until you add a policy under
+ /etc/agentknox/policies.

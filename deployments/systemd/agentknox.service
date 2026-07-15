@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+[Unit]
+Description=AgentKnox - transparent security monitor & policy enforcer for AI coding agents
+Documentation=https://github.com/boanlab/agentknox
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agentknox --log-level=info
+Restart=on-failure
+RestartSec=3
+# eBPF + BPF-LSM + cgroup management require these; CAP_KILL lets the userspace
+# Kill effect terminate a non-root agent session.
+AmbientCapabilities=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_MAC_ADMIN CAP_SYS_PTRACE CAP_SYS_RESOURCE CAP_KILL
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_BPF CAP_PERFMON CAP_NET_ADMIN CAP_MAC_ADMIN CAP_SYS_PTRACE CAP_SYS_RESOURCE CAP_KILL
+# AgentKnox denies session writes to its own config (self-protection).
+ReadWritePaths=/var/lib/agentknox /sys/fs/cgroup
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

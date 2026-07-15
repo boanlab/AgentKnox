@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: Apache-2.0
+# golangci-lint config for AgentKnox. Keeps the bug-catching linters and drops
+# the opinionated style/quick-fix checks (use gofmt for formatting). Generated
+# code (*.pb.go) and the embedded BPF object loader are excluded.
+version: "2"
+
+run:
+  timeout: 5m
+  go: "1.25"
+
+linters:
+  default: none
+  enable:
+    - govet
+    - errcheck
+    - ineffassign
+    - unused
+    - staticcheck
+
+  settings:
+    staticcheck:
+      # Only actual-bug checks (SA*); QF*/ST* style checks are off.
+      checks:
+        - SA*
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+
+  exclusions:
+    generated: strict
+    paths:
+      - ".*\\.pb\\.go$"
+      - ".*_bpfel.*"
+    rules:
+      # Close() on defer/cleanup paths is idiomatic (teardown, nothing to do).
+      - linters: [errcheck]
+        source: "Close\\(\\)"
+      - linters: [errcheck]
+        path: '_test\.go'

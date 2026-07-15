@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Checks the SPDX headers configured in .licenserc.yaml: Apache-2.0 for Go
+# sources, the Makefile, and the Dockerfile. The eBPF C sources under bpf/ are
+# GPL-2.0 (required to call GPL-only kernel helpers) and are excluded there,
+# with their headers maintained by hand.
+name: license
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  license:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check License Header
+        uses: apache/skywalking-eyes@a790ab8dd23a7f861c18bd6aaa9b012e3a234bce
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
