@@ -74,8 +74,31 @@ jobs:
       - name: Run unit tests
         run: make test
 
-  push-image:
+  # Whether this tag is a final release (vX.Y.Z) or a pre-release (v1.2.3-rc1).
+  # Both publish their own artifacts; only a final one takes over :latest and is
+  # listed as a normal release. Read once here so the image and the package
+  # cannot disagree about what kind of tag they are shipping.
+  classify:
     needs: [go-fmt, go-vet, go-lint, go-sec, go-test]
+    runs-on: ubuntu-latest
+    outputs:
+      final: ${{ steps.tag.outputs.final }}
+    steps:
+      # Through the environment, not string interpolation: a tag name is
+      # attacker-controlled input to this shell for anyone who can push one.
+      - name: Classify the tag
+        id: tag
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [[ "$REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "final=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "final=0" >> "$GITHUB_OUTPUT"
+          fi
+
+  push-image:
+    needs: [go-fmt, go-vet, go-lint, go-sec, go-test, classify]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,4 +109,44 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Push AgentKnox image
-        run: make TAG=${{ github.ref_name }} push-image
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          PUSH_LATEST: ${{ needs.classify.outputs.final }}
+        run: make TAG="$REF_NAME" PUSH_LATEST="$PUSH_LATEST" push-image
+
+  publish-deb:
+    needs: [go-fmt, go-vet, go-lint, go-sec, go-test, classify]
+    runs-on: ubuntu-latest
+    permissions:
+      # Only this job writes: it creates the release and attaches the package.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      # `deb-package`, not `deb`: the CO-RE object is committed and embedded via
+      # go:embed, so no clang is needed here -- the same reason the image build
+      # does without one. Regenerating it with the runner's toolchain would ship
+      # bytes that never went through review. dpkg-deb is on the runner image.
+      # VERSION alone is enough: TAG and DEB_VERSION both derive from it, so the
+      # package filename, the control file, and the version the daemon logs on
+      # startup all stay in step.
+      - name: Build the Debian package
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: make VERSION="$REF_NAME" deb-package
+      - name: Publish it on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          FINAL: ${{ needs.classify.outputs.final }}
+        run: |
+          if ! gh release view "$REF_NAME" >/dev/null 2>&1; then
+            prerelease=""
+            [ "$FINAL" = "1" ] || prerelease="--prerelease"
+            gh release create "$REF_NAME" --title "$REF_NAME" \
+              --generate-notes --verify-tag $prerelease
+          fi
+          gh release upload "$REF_NAME" dist/*.deb --clobber

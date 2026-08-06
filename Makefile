@@ -15,7 +15,7 @@ GOSEC    := $(shell command -v gosec 2>/dev/null || echo $(shell go env GOPATH)/
 DEB_VERSION ?= $(patsubst v%,%,$(VERSION))
 DEB        := dist/agentknox_$(DEB_VERSION)_amd64.deb
 
-.PHONY: all bpf proto build agentknox akctl aggregator offsetdb test vet fmt gofmt golangci-lint gosec build-image push-image deb tidy clean run
+.PHONY: all bpf proto build agentknox akctl aggregator offsetdb test vet fmt gofmt golangci-lint gosec build-image push-image deb deb-package tidy clean run
 
 all: build
 
@@ -87,12 +87,29 @@ build-image:
 
 ## push-image: publish the container image. Release CI overrides TAG with the
 ## version tag; a bare run would otherwise push :dev.
+## PUSH_LATEST=1 additionally moves :latest onto the same image. Release CI sets
+## it only for a final vX.Y.Z tag, so a pre-release publishes its own tag but
+## never becomes what a bare `docker pull` hands someone.
 push-image: build-image
 	docker push $(IMAGE):$(TAG)
+	@if [ "$(PUSH_LATEST)" = "1" ]; then \
+		echo "docker tag $(IMAGE):$(TAG) $(IMAGE):latest"; \
+		docker tag $(IMAGE):$(TAG) $(IMAGE):latest; \
+		echo "docker push $(IMAGE):latest"; \
+		docker push $(IMAGE):latest; \
+	fi
 
 ## deb: build a Debian package (systemd service auto-enabled on install).
-## Needs dpkg-deb (Debian/Ubuntu). Override version with DEB_VERSION=x.y.z.
-deb: bpf agentknox akctl
+## Recompiles the eBPF object first, so it needs clang + llvm-strip as well as
+## dpkg-deb (Debian/Ubuntu). Override version with DEB_VERSION=x.y.z.
+deb: bpf
+	$(MAKE) deb-package
+
+## deb-package: assemble the .deb without invoking clang, from the eBPF object
+## already committed at internal/sensor/agentknox_bpfel.o. Release CI uses this
+## so the package embeds the reviewed, committed object -- the same one the
+## container image ships -- rather than whatever a runner-side clang produced.
+deb-package: agentknox akctl
 	@rm -rf dist/deb && mkdir -p dist
 	@root=dist/deb/agentknox; \
 	install -D -m0755 bin/agentknox $$root/usr/bin/agentknox; \
