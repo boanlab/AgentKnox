@@ -697,6 +697,9 @@ func (d *Daemon) onSessionEnded(s *types.AgentSession) {
 	d.archiver.SessionEnded(s.ID)
 	d.policy.ForgetSession(s.ID)
 	d.exporter.UpdateSession(s)
+	// Last: the cgroup can only go once its processes are gone and the flags that
+	// keyed off it have been cleared.
+	d.sessions.ReleaseSessionCgroup(s)
 }
 
 // onMemberExit releases the per-pid kernel state of a session member that has
@@ -747,6 +750,11 @@ func (d *Daemon) anyWantsTaintedCodeBlock() bool {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	// Reclaim managed cgroups left behind by a previous run (a crash, a kill -9,
+	// or a release that hit EBUSY). Only empty ones are removed, so a live
+	// session's cgroup is never touched.
+	d.sessions.SweepOrphanCgroups()
+
 	// Exporter.Start blocks until ctx is done (it owns the HTTP servers), so run
 	// it in the background and let Run proceed to load/attach the sensors.
 	go func() {
