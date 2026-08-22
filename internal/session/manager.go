@@ -55,6 +55,17 @@ type Manager struct {
 	// sensor unregister + per-session cleanup.
 	OnSessionEnded func(*types.AgentSession)
 
+	// OnMemberExit, if set, runs outside the lock when a NON-root member of a
+	// session exits, so the caller can release the per-pid kernel state it
+	// registered for that process.
+	//
+	// Session teardown cannot cover this: it walks sess.Members, from which an
+	// already-exited child has been removed by the time the root exits, so every
+	// bash, git and node the agent ever spawned left a permanent entry in a
+	// 65536-slot map. Once that map is full, registration and enforcement start
+	// failing and newly spawned processes are neither observed nor enforced.
+	OnMemberExit func(sess *types.AgentSession, pid int32)
+
 	// ManageCgroup controls whether a detected agent's process tree is moved into
 	// a dedicated managed cgroup (dedicated enforcement key, but invasive to live
 	// processes) or left in place, using its existing cgroup id as the key
@@ -477,7 +488,7 @@ func (m *Manager) OnExit(ev *types.SyscallEvent) {
 		return
 	}
 
-	var ended *types.AgentSession
+	var ended, exitedMember *types.AgentSession
 	if sess.RootPID == pid {
 		// A launcher root may re-exec into a child that becomes the real worker
 		// (e.g. `node <cli>` spawning `node --max-old-space-size <cli>`, which owns
@@ -532,11 +543,15 @@ func (m *Manager) OnExit(ev *types.SyscallEvent) {
 				break
 			}
 		}
+		exitedMember = sess
 	}
 	m.mu.Unlock()
 
 	if ended != nil && m.OnSessionEnded != nil {
 		m.OnSessionEnded(ended)
+	}
+	if exitedMember != nil && m.OnMemberExit != nil {
+		m.OnMemberExit(exitedMember, pid)
 	}
 }
 

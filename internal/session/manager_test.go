@@ -285,3 +285,54 @@ func TestWireIntentsDrivesCoverageDowngrade(t *testing.T) {
 		t.Fatal("unknown session reported as found")
 	}
 }
+
+// A non-root member that exits must be reported, because that is the only
+// moment the per-pid kernel state registered for it can be released. Session
+// teardown walks Members, and this pid is removed from Members here -- so
+// without the callback the registration is never undone and the pid map fills
+// up with every process the agent ever spawned.
+func TestMemberExitIsReportedSoPerPidStateCanBeReleased(t *testing.T) {
+	m := newTestManager()
+
+	var gotPIDs []int32
+	var gotSession string
+	m.OnMemberExit = func(s *types.AgentSession, pid int32) {
+		gotSession = s.ID
+		gotPIDs = append(gotPIDs, pid)
+	}
+
+	sess, ok := m.OnExec(&types.SyscallEvent{
+		Category: types.CategoryProcess, Operation: "exec",
+		HostPID: 6000, HostPPID: 1, CgroupID: 222, Resource: "/usr/bin/codex",
+	})
+	if !ok {
+		t.Fatal("root exec did not create a session")
+	}
+	m.OnExec(&types.SyscallEvent{
+		Category: types.CategoryProcess, Operation: "exec",
+		HostPID: 6001, HostPPID: 6000, CgroupID: 222, Resource: "/bin/sh",
+	})
+
+	// The child exits first: this is the case teardown cannot see later.
+	m.OnExit(&types.SyscallEvent{HostPID: 6001})
+	if len(gotPIDs) != 1 || gotPIDs[0] != 6001 {
+		t.Fatalf("OnMemberExit pids = %v, want [6001]", gotPIDs)
+	}
+	if gotSession != sess.ID {
+		t.Fatalf("OnMemberExit session = %q, want %q", gotSession, sess.ID)
+	}
+
+	// By the time the root exits, the child is gone from Members -- which is
+	// precisely why the callback above had to fire.
+	for _, mp := range sess.Members {
+		if mp == 6001 {
+			t.Fatal("exited child is still in Members; the test no longer covers the leak")
+		}
+	}
+
+	// The root's own exit is a session end, not a member exit.
+	m.OnExit(&types.SyscallEvent{HostPID: 6000})
+	if len(gotPIDs) != 1 {
+		t.Fatalf("OnMemberExit fired for the root too: %v", gotPIDs)
+	}
+}
