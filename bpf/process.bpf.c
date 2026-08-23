@@ -144,11 +144,15 @@ int ak_proc_exit(void *ctx)
 	if (!(ak_session_flags(&cgid) & AK_SESS_MONITOR))
 		return 0;
 	ak_emit(cgid, AK_PSEUDO_SCHED_EXIT, AK_CAT_PROCESS, 0, NULL);
-	// Bound ak_session_pids: drop membership when the thread-group leader exits
-	// (tid == tgid). Balances the fork-time inserts above.
+	// Bound ak_session_pids. sched_process_fork also fires for thread creation, and
+	// the hook there keys the new task's pid (a tid for a thread) into this
+	// tgid-keyed map. Deleting only on leader exit therefore leaked one entry per
+	// thread the session ever created: the map is a plain HASH, so once it fills,
+	// inserts fail and new children go unarmed, and a leaked tid can later collide
+	// with an unrelated process's tgid and hand it the session's flags. Delete the
+	// exiting task's own key, which balances both the fork and the thread case.
 	__u64 pt = bpf_get_current_pid_tgid();
-	__u32 tgid = pt >> 32;
-	if ((__u32)pt == tgid)
-		bpf_map_delete_elem(&ak_session_pids, &tgid);
+	__u32 self = (__u32)pt;
+	bpf_map_delete_elem(&ak_session_pids, &self);
 	return 0;
 }

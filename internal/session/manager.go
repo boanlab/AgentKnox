@@ -36,7 +36,9 @@ import (
 var defaultSignatures = []string{"claude", "codex", "crush", "gemini", "copilot"}
 
 // cgroupRoot is the cgroup v2 unified hierarchy mount point on Linux.
-const cgroupRoot = "/sys/fs/cgroup"
+// cgroupRoot is a var, not a const, so tests can point the managed subtree at a
+// temporary directory instead of the real cgroup2 mount.
+var cgroupRoot = "/sys/fs/cgroup"
 
 // Manager detects agents, normalizes them into AgentSession, places them into a
 // managed cgroup, tracks membership/lifecycle, and enriches events. All state is
@@ -54,6 +56,17 @@ type Manager struct {
 	// OnSessionEnded, if set, runs outside the lock when a session's root exits:
 	// sensor unregister + per-session cleanup.
 	OnSessionEnded func(*types.AgentSession)
+
+	// OnMemberExit, if set, runs outside the lock when a NON-root member of a
+	// session exits, so the caller can release the per-pid kernel state it
+	// registered for that process.
+	//
+	// Session teardown cannot cover this: it walks sess.Members, from which an
+	// already-exited child has been removed by the time the root exits, so every
+	// bash, git and node the agent ever spawned left a permanent entry in a
+	// 65536-slot map. Once that map is full, registration and enforcement start
+	// failing and newly spawned processes are neither observed nor enforced.
+	OnMemberExit func(sess *types.AgentSession, pid int32)
 
 	// ManageCgroup controls whether a detected agent's process tree is moved into
 	// a dedicated managed cgroup (dedicated enforcement key, but invasive to live
@@ -477,7 +490,7 @@ func (m *Manager) OnExit(ev *types.SyscallEvent) {
 		return
 	}
 
-	var ended *types.AgentSession
+	var ended, exitedMember *types.AgentSession
 	if sess.RootPID == pid {
 		// A launcher root may re-exec into a child that becomes the real worker
 		// (e.g. `node <cli>` spawning `node --max-old-space-size <cli>`, which owns
@@ -532,11 +545,15 @@ func (m *Manager) OnExit(ev *types.SyscallEvent) {
 				break
 			}
 		}
+		exitedMember = sess
 	}
 	m.mu.Unlock()
 
 	if ended != nil && m.OnSessionEnded != nil {
 		m.OnSessionEnded(ended)
+	}
+	if exitedMember != nil && m.OnMemberExit != nil {
+		m.OnMemberExit(exitedMember, pid)
 	}
 }
 
@@ -697,4 +714,97 @@ func newUUIDv7() string {
 		return id.String()
 	}
 	return uuid.NewString()
+}
+
+// cgroupNamePrefix marks a cgroup directory as one AgentKnox created. Removal is
+// gated on it so a session that never got its own cgroup -- and therefore carries
+// the path of a cgroup belonging to somebody else -- can never delete it.
+const cgroupNamePrefix = "session-"
+
+const (
+	// cgroupReleaseRetries/Wait bound how long teardown waits for a straggler to
+	// leave. cgroupfs refuses rmdir with EBUSY while any process remains, and a
+	// process that has just been signalled takes a moment to be reaped.
+	cgroupReleaseRetries = 5
+	cgroupReleaseWait    = 200 * time.Millisecond
+)
+
+// releaseCgroup removes a managed cgroup directory, retrying while the kernel
+// still reports it busy.
+//
+// rmdir, not RemoveAll: cgroupfs removes an empty cgroup even though it lists
+// dozens of interface files, and the kernel refuses while any process or child
+// cgroup remains -- so this cannot take live processes with it. A recursive
+// delete on a path that turned out not to be a cgroup would be catastrophic.
+func releaseCgroup(dir string, retries int, wait time.Duration) error {
+	if dir == "" || !strings.Contains(dir, cgroupNamePrefix) {
+		return nil
+	}
+	var err error
+	for i := 0; ; i++ {
+		if err = os.Remove(dir); err == nil || os.IsNotExist(err) {
+			return nil
+		}
+		if i >= retries {
+			return err
+		}
+		time.Sleep(wait)
+	}
+}
+
+// ReleaseSessionCgroup removes the cgroup directory created for a session that
+// has ended. Without it every session AgentKnox ever managed leaves a cgroup
+// behind: the directory outlives the daemon, and each one keeps kernel-side
+// cgroup state alive.
+func (m *Manager) ReleaseSessionCgroup(s *types.AgentSession) {
+	if s == nil || s.CgroupPath == "" {
+		return
+	}
+	if err := releaseCgroup(s.CgroupPath, cgroupReleaseRetries, cgroupReleaseWait); err != nil {
+		// Not silent: what is left here is reclaimed only by the next startup
+		// sweep, and a persistent EBUSY means processes outlived the session.
+		m.log.Warn("could not release the session cgroup; leaving it for the next startup sweep",
+			zap.String("session", s.ID), zap.String("cgroup", s.CgroupPath), zap.Error(err))
+	}
+}
+
+// SweepOrphanCgroups reclaims managed cgroups left behind by a previous daemon
+// run -- a crash, a kill -9, or a release that hit EBUSY. Only empty ones are
+// removed, so a cgroup still holding processes (possibly another daemon's live
+// session) is left alone. Returns how many were reclaimed.
+func (m *Manager) SweepOrphanCgroups() int {
+	removed := 0
+	for _, dir := range orphanCgroupDirs(filepath.Join(cgroupRoot, m.cgroupParent)) {
+		if err := os.Remove(dir); err == nil {
+			removed++
+		}
+	}
+	if removed > 0 {
+		m.log.Info("reclaimed orphaned agent cgroups", zap.Int("count", removed))
+	}
+	return removed
+}
+
+// orphanCgroupDirs lists the managed cgroups under parent that hold no
+// processes. A cgroup that still lists a pid belongs to a live session --
+// possibly another daemon's -- and a directory we did not create is never a
+// candidate, whatever it contains.
+func orphanCgroupDirs(parent string) []string {
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		return nil // no managed parent slice yet: nothing to reclaim
+	}
+	var out []string
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), cgroupNamePrefix) {
+			continue
+		}
+		dir := filepath.Join(parent, e.Name())
+		b, err := os.ReadFile(filepath.Join(dir, "cgroup.procs"))
+		if err != nil || len(strings.TrimSpace(string(b))) != 0 {
+			continue // unreadable, or still holding processes
+		}
+		out = append(out, dir)
+	}
+	return out
 }

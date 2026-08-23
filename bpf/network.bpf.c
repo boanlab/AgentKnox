@@ -150,8 +150,13 @@ int ak_sendto(struct trace_event_raw_sys_enter *ctx)
 	int len = (int)ctx->args[2];
 	if (len <= 0)
 		return 0;
-	if (len > AK_MAX_STR)
-		len = AK_MAX_STR;
+	// Clamp to AK_MAX_STR-1, not AK_MAX_STR: the read length below is masked with
+	// (AK_MAX_STR-1) to satisfy the verifier, and a value equal to AK_MAX_STR masks
+	// to 0 -- which captured nothing at all for any payload of 256 bytes or more
+	// (a large DNS answer, EDNS). One below the power of two keeps the mask an
+	// identity, matching ak_emit_tls.
+	if (len > AK_MAX_STR - 1)
+		len = AK_MAX_STR - 1;
 
 	struct ak_rec *r = bpf_ringbuf_reserve(&ak_events, sizeof(*r), 0);
 	if (!r)
@@ -196,8 +201,13 @@ int ak_recvfrom_exit(struct trace_event_raw_sys_exit *ctx)
 	if (ret <= 0)
 		return 0;
 	int len = (int)ret;
-	if (len > AK_MAX_STR)
-		len = AK_MAX_STR;
+	// Clamp to AK_MAX_STR-1, not AK_MAX_STR: the read length below is masked with
+	// (AK_MAX_STR-1) to satisfy the verifier, and a value equal to AK_MAX_STR masks
+	// to 0 -- which captured nothing at all for any payload of 256 bytes or more
+	// (a large DNS answer, EDNS). One below the power of two keeps the mask an
+	// identity, matching ak_emit_tls.
+	if (len > AK_MAX_STR - 1)
+		len = AK_MAX_STR - 1;
 
 	__u64 cgid = 0;
 	if (!(ak_session_flags(&cgid) & AK_SESS_MONITOR))
@@ -257,8 +267,13 @@ int ak_recvmsg_exit(struct trace_event_raw_sys_exit *ctx)
 	if (ret <= 0)
 		return 0;
 	int len = (int)ret;
-	if (len > AK_MAX_STR)
-		len = AK_MAX_STR;
+	// Clamp to AK_MAX_STR-1, not AK_MAX_STR: the read length below is masked with
+	// (AK_MAX_STR-1) to satisfy the verifier, and a value equal to AK_MAX_STR masks
+	// to 0 -- which captured nothing at all for any payload of 256 bytes or more
+	// (a large DNS answer, EDNS). One below the power of two keeps the mask an
+	// identity, matching ak_emit_tls.
+	if (len > AK_MAX_STR - 1)
+		len = AK_MAX_STR - 1;
 
 	__u64 cgid = 0;
 	if (!(ak_session_flags(&cgid) & AK_SESS_MONITOR))

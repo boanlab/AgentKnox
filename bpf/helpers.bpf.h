@@ -24,10 +24,15 @@ static __always_inline __u64 ak_fnv1a(const char *buf, int len)
 	return h;
 }
 
-// AK_BASENAME_MAX bounds the basename scan so the exec-time agent check stays well
-// inside the verifier's instruction budget (agent signatures are short names such
-// as "claude"/"codex"; 64 bytes is ample).
-#define AK_BASENAME_MAX 64
+// AK_BASENAME_MAX bounds the single pass ak_fnv1a_basename makes over the WHOLE
+// path, not over the trailing component alone: the hash restarts at every '/', so
+// the scan must reach the end of the path for the final segment to be the one that
+// survives. It therefore has to match the path bound (AK_MAX_STR), not the length
+// of a signature name. A smaller value silently truncates mid-path and yields the
+// hash of a partial interior segment, which no signature can match -- that is what
+// made in-kernel arming fail for agents installed under a long prefix (nvm, pnpm,
+// npm-global).
+#define AK_BASENAME_MAX AK_MAX_STR
 
 // ak_fnv1a_basename hashes the final path component of a NUL-terminated path
 // (e.g. "/home/boan/go/bin/crush" -> hash of "crush"), matching the userspace hash
@@ -125,16 +130,25 @@ static __always_inline int ak_forbidden(const char *buf, __u32 op)
 static __always_inline __u64 ak_fnv1a_split(const char *dir, const char *name)
 {
 	__u64 h = 0xcbf29ce484222325ULL;
+	char last = 0;
 	int i;
 	for (i = 0; i < AK_PATH_MAX; i++) {
 		char c = dir[i];
 		if (c == 0)
 			break;
+		last = c;
 		h ^= (__u64)(__u8)c;
 		h *= 0x100000001b3ULL;
 	}
-	h ^= (__u64)(__u8)'/';
-	h *= 0x100000001b3ULL;
+	// Insert the separator only when dir does not already end in one. bpf_d_path
+	// renders the root directory as "/", so appending unconditionally hashed
+	// "//name" there and nothing -- no rule, no taint entry -- ever matched a file
+	// sitting directly under /. `last` is carried out of the loop rather than
+	// re-read as dir[i-1], which keeps this a single bounded pass.
+	if (last != '/') {
+		h ^= (__u64)(__u8)'/';
+		h *= 0x100000001b3ULL;
+	}
 	for (i = 0; i < AK_NAME_MAX; i++) {
 		char c = name[i];
 		if (c == 0)
@@ -153,6 +167,7 @@ static __always_inline int ak_forbidden_split(const char *dir, const char *name,
 {
 	__u64 h = 0xcbf29ce484222325ULL;
 	int i;
+	char last = 0;
 	for (i = 0; i < AK_PATH_MAX; i++) {
 		char c = dir[i];
 		if (c == 0)
@@ -162,6 +177,7 @@ static __always_inline int ak_forbidden_split(const char *dir, const char *name,
 			if (dm && (*dm & op))
 				return 1;
 		}
+		last = c;
 		h ^= (__u64)(__u8)c;
 		h *= 0x100000001b3ULL;
 	}
@@ -169,9 +185,15 @@ static __always_inline int ak_forbidden_split(const char *dir, const char *name,
 	__u32 *dm = bpf_map_lookup_elem(&ak_enforce_dir, &h);
 	if (dm && (*dm & op))
 		return 1;
-	// Separator, then the file name -> full-path hash.
-	h ^= (__u64)(__u8)'/';
-	h *= 0x100000001b3ULL;
+	// Separator, then the file name -> full-path hash. Skip the separator when dir
+	// already ends in one ("/" for the root directory), which otherwise produced
+	// "//name" and made rules on root-level files unmatchable. `last` is carried
+	// out of the loop rather than re-read as dir[i-1], keeping this a single
+	// bounded pass.
+	if (last != '/') {
+		h ^= (__u64)(__u8)'/';
+		h *= 0x100000001b3ULL;
+	}
 	for (i = 0; i < AK_NAME_MAX; i++) {
 		char c = name[i];
 		if (c == 0)

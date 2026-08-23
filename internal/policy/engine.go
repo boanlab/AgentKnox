@@ -740,7 +740,22 @@ func effectRank(e types.PolicyEffect) int {
 // Dir.
 func deriveKernelRules(rules []*compiledRule) []pipeline.KernelRule {
 	var out []pipeline.KernelRule
+	// Allow rules seen SO FAR, which is what makes this first-match-wins: an Allow
+	// that precedes a Block resolves the overlap to Allow in userspace, and pushing
+	// that Block into the kernel would deny it anyway -- the kernel maps carry no
+	// rule order and no Allow precedence. An Allow that comes after the Block does
+	// not shadow it, exactly as the userspace evaluator would decide.
+	allowedPaths := map[string]bool{}
+	var allowedDirs []string
 	for _, cr := range rules {
+		if cr.effect == types.EffectAllow && cr.rule.When.System != nil {
+			if p := cr.rule.When.System.Path; p != "" {
+				allowedPaths[p] = true
+			}
+			if cr.normDir != "" {
+				allowedDirs = append(allowedDirs, cr.normDir)
+			}
+		}
 		if cr.effect != types.EffectBlock {
 			continue
 		}
@@ -772,6 +787,12 @@ func deriveKernelRules(rules []*compiledRule) []pipeline.KernelRule {
 			continue
 		}
 		sp := cr.rule.When.System
+		if sp.Path != "" && allowedPaths[sp.Path] {
+			continue
+		}
+		if shadowedByAllowDir(sp.Path, cr.normDir, allowedDirs) {
+			continue
+		}
 		switch sp.Op {
 		case "open", "read", "write", "exec", "delete", "rename", "chmod", "chown":
 		case "connect":
@@ -798,6 +819,24 @@ func deriveKernelRules(rules []*compiledRule) []pipeline.KernelRule {
 		})
 	}
 	return out
+}
+
+// shadowedByAllowDir reports whether an Allow directory rule seen earlier covers
+// the path (or directory) a Block rule names.
+func shadowedByAllowDir(path, dir string, allowDirs []string) bool {
+	target := path
+	if target == "" {
+		target = dir
+	}
+	if target == "" {
+		return false
+	}
+	for _, ad := range allowDirs {
+		if strings.HasPrefix(target, ad) {
+			return true
+		}
+	}
+	return false
 }
 
 func kernelCategory(op string) types.Category {

@@ -4,6 +4,7 @@ package session
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/boanlab/agentknox/pkg/types"
@@ -284,4 +285,127 @@ func TestWireIntentsDrivesCoverageDowngrade(t *testing.T) {
 	if _, ok := m.WireIntents("no-such-session"); ok {
 		t.Fatal("unknown session reported as found")
 	}
+}
+
+// A non-root member that exits must be reported, because that is the only
+// moment the per-pid kernel state registered for it can be released. Session
+// teardown walks Members, and this pid is removed from Members here -- so
+// without the callback the registration is never undone and the pid map fills
+// up with every process the agent ever spawned.
+func TestMemberExitIsReportedSoPerPidStateCanBeReleased(t *testing.T) {
+	m := newTestManager()
+
+	var gotPIDs []int32
+	var gotSession string
+	m.OnMemberExit = func(s *types.AgentSession, pid int32) {
+		gotSession = s.ID
+		gotPIDs = append(gotPIDs, pid)
+	}
+
+	sess, ok := m.OnExec(&types.SyscallEvent{
+		Category: types.CategoryProcess, Operation: "exec",
+		HostPID: 6000, HostPPID: 1, CgroupID: 222, Resource: "/usr/bin/codex",
+	})
+	if !ok {
+		t.Fatal("root exec did not create a session")
+	}
+	m.OnExec(&types.SyscallEvent{
+		Category: types.CategoryProcess, Operation: "exec",
+		HostPID: 6001, HostPPID: 6000, CgroupID: 222, Resource: "/bin/sh",
+	})
+
+	// The child exits first: this is the case teardown cannot see later.
+	m.OnExit(&types.SyscallEvent{HostPID: 6001})
+	if len(gotPIDs) != 1 || gotPIDs[0] != 6001 {
+		t.Fatalf("OnMemberExit pids = %v, want [6001]", gotPIDs)
+	}
+	if gotSession != sess.ID {
+		t.Fatalf("OnMemberExit session = %q, want %q", gotSession, sess.ID)
+	}
+
+	// By the time the root exits, the child is gone from Members -- which is
+	// precisely why the callback above had to fire.
+	for _, mp := range sess.Members {
+		if mp == 6001 {
+			t.Fatal("exited child is still in Members; the test no longer covers the leak")
+		}
+	}
+
+	// The root's own exit is a session end, not a member exit.
+	m.OnExit(&types.SyscallEvent{HostPID: 6000})
+	if len(gotPIDs) != 1 {
+		t.Fatalf("OnMemberExit fired for the root too: %v", gotPIDs)
+	}
+}
+
+// Selecting which managed cgroups to reclaim is the part with a decision in it:
+// a cgroup that still lists a pid belongs to a live session -- possibly another
+// daemon's -- and a directory we did not create is never a candidate. (The
+// removal itself is one rmdir, which cgroupfs allows on an empty cgroup even
+// though it lists interface files; a normal filesystem does not, so this test
+// covers the selection rather than the syscall.)
+func TestOrphanCgroupSelection(t *testing.T) {
+	parent := t.TempDir()
+	mk := func(name, procs string) string {
+		dir := filepath.Join(parent, name)
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		if procs != "\x00" {
+			if err := os.WriteFile(filepath.Join(dir, "cgroup.procs"), []byte(procs), 0o600); err != nil {
+				t.Fatalf("write cgroup.procs: %v", err)
+			}
+		}
+		return dir
+	}
+
+	empty := mk("session-gone", "")
+	busy := mk("session-live", "4242\n")
+	foreign := mk("user.slice", "")
+
+	got := orphanCgroupDirs(parent)
+	if len(got) != 1 || got[0] != empty {
+		t.Fatalf("orphanCgroupDirs = %v, want [%s]", got, empty)
+	}
+	for _, keep := range []string{busy, foreign} {
+		for _, g := range got {
+			if g == keep {
+				t.Errorf("%s must not be a reclaim candidate", keep)
+			}
+		}
+	}
+
+	if dirs := orphanCgroupDirs(filepath.Join(parent, "does-not-exist")); dirs != nil {
+		t.Errorf("missing parent slice should yield no candidates, got %v", dirs)
+	}
+}
+
+// A session that never got its own cgroup carries the path of one belonging to
+// somebody else, so releasing it must not touch that directory.
+func TestReleaseCgroupOnlyTouchesOurOwn(t *testing.T) {
+	base := t.TempDir()
+
+	foreign := filepath.Join(base, "user.slice")
+	if err := os.MkdirAll(foreign, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager()
+	m.ReleaseSessionCgroup(&types.AgentSession{ID: "y", CgroupPath: foreign})
+	if _, err := os.Stat(foreign); err != nil {
+		t.Error("released a path that is not a managed cgroup")
+	}
+
+	// An empty managed cgroup is removed (no interface files here, so rmdir works).
+	ours := filepath.Join(base, "session-x")
+	if err := os.MkdirAll(ours, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	m.ReleaseSessionCgroup(&types.AgentSession{ID: "x", CgroupPath: ours})
+	if _, err := os.Stat(ours); !os.IsNotExist(err) {
+		t.Error("ReleaseSessionCgroup did not remove the session cgroup")
+	}
+
+	// No cgroup at all: nothing to do, and no panic.
+	m.ReleaseSessionCgroup(&types.AgentSession{ID: "z"})
+	m.ReleaseSessionCgroup(nil)
 }

@@ -330,3 +330,43 @@ func TestMatchFQDNBlock(t *testing.T) {
 		}
 	}
 }
+
+// A Block that an EARLIER Allow already covers must not reach the kernel. The
+// kernel maps carry no rule order and no Allow precedence, so installing such a
+// Block would deny an operation that first-match-wins resolved to Allow in
+// userspace -- the rule set would mean one thing in the daemon and the opposite
+// in the kernel.
+func TestKernelRules_ExcludesBlocksShadowedByAnEarlierAllow(t *testing.T) {
+	allowDir := func() *policyspec.Policy {
+		return &policyspec.Policy{
+			Kind:     "AgentKnoxPolicy",
+			Metadata: policyspec.Metadata{Name: "allow-ssh-dir"},
+			Spec: policyspec.Spec{
+				Selector: []string{"claude-code"},
+				Rules: []policyspec.Rule{{
+					Name:   "allow-ssh",
+					When:   policyspec.When{System: &policyspec.SystemPred{Op: "open", Dir: "~/.ssh/"}},
+					Effect: "Allow",
+				}},
+			},
+		}
+	}
+
+	// Allow first: the ssh Block is shadowed and stays out of the kernel.
+	e := New(nil)
+	if err := e.Load([]*policyspec.Policy{allowDir(), sshPolicy()}); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if krs := e.KernelRules(); len(krs) != 0 {
+		t.Fatalf("KernelRules len = %d, want 0 (Block is shadowed by the earlier Allow dir); got %+v", len(krs), krs)
+	}
+
+	// Reversed order: the Block wins first-match-wins, so it still installs.
+	e2 := New(nil)
+	if err := e2.Load([]*policyspec.Policy{sshPolicy(), allowDir()}); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if krs := e2.KernelRules(); len(krs) != 1 {
+		t.Fatalf("KernelRules len = %d, want 1 (Block precedes the Allow, so it is not shadowed)", len(krs))
+	}
+}

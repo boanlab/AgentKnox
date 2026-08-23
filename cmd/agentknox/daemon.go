@@ -120,6 +120,7 @@ func NewDaemon(cfg *config.Config, log *zap.Logger) (*Daemon, error) {
 	// Session lifecycle: onboard on detect, tear down on root exit.
 	d.sessions.OnNewSession = d.onNewSession
 	d.sessions.OnSessionEnded = d.onSessionEnded
+	d.sessions.OnMemberExit = d.onMemberExit
 	return d, nil
 }
 
@@ -696,6 +697,19 @@ func (d *Daemon) onSessionEnded(s *types.AgentSession) {
 	d.archiver.SessionEnded(s.ID)
 	d.policy.ForgetSession(s.ID)
 	d.exporter.UpdateSession(s)
+	// Last: the cgroup can only go once its processes are gone and the flags that
+	// keyed off it have been cleared.
+	d.sessions.ReleaseSessionCgroup(s)
+}
+
+// onMemberExit releases the per-pid kernel state of a session member that has
+// exited. Session teardown cannot cover this: it walks s.Members, which no
+// longer contains a child that already exited, so without this every process the
+// agent ever spawned left a permanent entry in the pid map.
+func (d *Daemon) onMemberExit(s *types.AgentSession, pid int32) {
+	d.sysSens.UnregisterPID(pid)
+	d.mcp.forget(pid)
+	d.forgetDB(pid)
 }
 
 // withAgentHelpers expands the configured agent signatures with the stable helper
@@ -736,6 +750,11 @@ func (d *Daemon) anyWantsTaintedCodeBlock() bool {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	// Reclaim managed cgroups left behind by a previous run (a crash, a kill -9,
+	// or a release that hit EBUSY). Only empty ones are removed, so a live
+	// session's cgroup is never touched.
+	d.sessions.SweepOrphanCgroups()
+
 	// Exporter.Start blocks until ctx is done (it owns the HTTP servers), so run
 	// it in the background and let Run proceed to load/attach the sensors.
 	go func() {
